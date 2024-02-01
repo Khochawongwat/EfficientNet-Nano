@@ -1,7 +1,4 @@
-import math
-import torch
 from torch import nn
-
 from utils import *
 
 params = {
@@ -42,6 +39,7 @@ class MBConvBlock(nn.Module):
         if self.expand_ratio != 1:
             self.expand_conv = ConvBlock(in_channels, expansion_channels, 16, 1, 1, activation_fn = True, bias=False)
             self.bn0 = nn.BatchNorm2d(expansion_channels, momentum=self.momentum, eps=self.eps)
+            self.bn0 = ProxyNormalization(self.bn0, activation_fn = self.relu, eps = self.eps, n_samples = min(256, self.bn0), apply_activation = False)
 
         #Squeeze and Excitation
         if include_se:
@@ -52,12 +50,13 @@ class MBConvBlock(nn.Module):
         #Depthwise Convolution
             self.depthwise_conv = ConvBlock(expansion_channels, expansion_channels, 16, kernel_size, stride, activation_fn = True, bias = True)
 
-        #Batch Normalization / Proxy Normalization
-        if proxy_norm:
-            pass
-        else:
-            self.bn1 = nn.BatchNorm2d(expansion_channels, momentum=self.momentum, eps=self.eps)
-            self.bn2 = nn.BatchNorm2d(out_channels, momentum=self.momentum, eps=self.eps)
+        #Batch Normalization
+        self.bn1 = nn.BatchNorm2d(expansion_channels, momentum=self.momentum, eps=self.eps)
+        self.bn2 = nn.BatchNorm2d(out_channels, momentum=self.momentum, eps=self.eps)
         
+        if proxy_norm:
+            self.bn1 = ProxyNormalization(self.bn1, activation_fn = self.relu, eps = self.eps, n_samples = min(256, self.bn1), apply_activation = False)
+            self.bn2 = ProxyNormalization(self.bn2, activation_fn = self.relu, eps = self.eps, n_samples = min(256, self.bn2), apply_activation = False)
+
         #Projection
         self.project_conv = ConvBlock(expansion_channels, out_channels, 16, 1, 1, activation_fn = False, bias = False)
