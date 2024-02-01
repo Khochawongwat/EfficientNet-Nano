@@ -5,17 +5,6 @@ params = {
     "efficientnet-nano": [1, 1, 224, 0.2],
 }
 
-def drop_connect(x, drop_connect_rate, training):
-    if not training:
-        return x
-    keep_prob = 1.0 - drop_connect_rate
-    batch_size = x.shape[0]
-    random_tensor = keep_prob
-    random_tensor += torch.rand([batch_size, 1, 1, 1], dtype=x.dtype, device=x.device)
-    binary_mask = torch.floor(random_tensor)
-    x = (x / keep_prob) * binary_mask
-    return x
-
 class ConvBlock(nn.Module):
     def __init__(self, in_channels, out_channels, group_size, kernel_size, stride, activation_fn, bias = True):
         super().__init__()
@@ -27,7 +16,7 @@ class ConvBlock(nn.Module):
         return self.silu(self.conv(x))
     
 class MBConvBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_size, stride, se_ratio, include_se, proxy_norm):
+    def __init__(self, in_channels, out_channels, kernel_size, stride, se_ratio, include_se, proxy_norm, group_size = 16):
         super().__init__()
 
         self.momentum = 0.01
@@ -39,7 +28,7 @@ class MBConvBlock(nn.Module):
         self.se_ratio = se_ratio
         self.include_se = include_se
         self.proxy_norm = proxy_norm
-
+        self.group_size = group_size
         self.relu = nn.ReLU6(inplace = True)
 
         #Stages -> Expansion, Squeeze and Excitation, Depthwise Convolution, Projection
@@ -48,24 +37,24 @@ class MBConvBlock(nn.Module):
         expansion_channels = in_channels * self.expand_ratio
 
         if self.expand_ratio != 1:
-            self.expand_conv = ConvBlock(in_channels, expansion_channels, 16, 1, 1, activation_fn = True, bias=False)
+            self.expand_conv = ConvBlock(in_channels, expansion_channels, self.group_size,  1, 1, activation_fn = True, bias=False)
             self.bn0 = nn.BatchNorm2d(expansion_channels, momentum=self.momentum, eps=self.eps)
 
         #Squeeze and Excitation
         if include_se:
             n_squeezed_channels = max(1, int(in_channels * se_ratio))
-            self.se_reduce = ConvBlock(in_channels, n_squeezed_channels, 16, 1, 1, activation_fn = True)
-            self.se_expand = ConvBlock(n_squeezed_channels, out_channels, 16, 1, 1, activation_fn = True)
+            self.se_reduce = ConvBlock(in_channels, n_squeezed_channels, self.group_size, 1, 1, activation_fn = True)
+            self.se_expand = ConvBlock(n_squeezed_channels, out_channels, self.group_size, 1, 1, activation_fn = True)
         
         #Depthwise Convolution
-            self.depthwise_conv = ConvBlock(expansion_channels, expansion_channels, 16, kernel_size, stride, activation_fn = True, bias = True)
+            self.depthwise_conv = ConvBlock(expansion_channels, expansion_channels, self.group_size, kernel_size, stride, activation_fn = True, bias = True)
 
         #Batch Normalization
         self.bn1 = nn.BatchNorm2d(expansion_channels, momentum=self.momentum, eps=self.eps)
         self.bn2 = nn.BatchNorm2d(out_channels, momentum=self.momentum, eps=self.eps)
 
         #Projection
-        self.project_conv = ConvBlock(expansion_channels, out_channels, 16, 1, 1, activation_fn = False, bias = False)
+        self.project_conv = ConvBlock(expansion_channels, out_channels, self.group_size, 1, 1, activation_fn = False, bias = False)
 
     def forward(self, x, drop_connect_rate = None):
 
@@ -80,11 +69,18 @@ class MBConvBlock(nn.Module):
         #Expansion
         if self.expand_ratio != 1:
             bn0 = self.bn0(self.expand_conv(x))
-            x = ProxyNormalization(bn0, activation_fn = self.relu, eps = 0.03, n_samples = min(bn0.shape[0], 256), apply_activation = True).forward()
+            if self.proxy_norm:
+                #Usually relu is applied after batch normalization but here ProxyNormalization automatically applies the activation function to the normalized tensor, given apply_activation = True 
+                x = ProxyNormalization(bn0, activation_fn = self.relu, eps = 0.03, n_samples = min(bn0.shape[0], 256), apply_activation = True).forward()
+            else:
+                x = self.relu(bn0)
 
         #Depthwise Convolution
         bn1 = self.bn1(self.depthwise_conv(x))
-        x = ProxyNormalization(bn1, activation_fn = self.relu, eps = 0.03, n_samples =  min(bn1.shape[0], 256), apply_activation = True).forward()
+        if self.proxy_norm:
+            x = ProxyNormalization(bn1, activation_fn = self.relu, eps = 0.03, n_samples =  min(bn1.shape[0], 256), apply_activation = True).forward()
+        else:
+            x = self.relu(bn1)
         
         #Squeeze and Excitation
         if self.include_se:
@@ -96,7 +92,10 @@ class MBConvBlock(nn.Module):
 
         #Projection
         bn2 = self.bn2(self.project_conv(x))
-        x = ProxyNormalization(bn2, activation_fn = self.relu, eps = 0.03, n_samples =  min(bn2.shape[0], 256), apply_activation = True).forward()
+        if self.proxy_norm:
+            x = ProxyNormalization(bn2, activation_fn = self.relu, eps = 0.03, n_samples =  min(bn2.shape[0], 256), apply_activation = True).forward()
+        else:
+            x = self.relu(bn2)
 
         # Add the identity block to the output of the projection if the input
         # and output channels are the same and the stride is 1
