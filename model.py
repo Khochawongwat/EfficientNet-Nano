@@ -9,7 +9,7 @@ params = {
 }
 
 class ConvBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, group_size, kernel_size, stride, activation_fn, bias):
+    def __init__(self, in_channels, out_channels, group_size, kernel_size, stride, activation_fn, bias = True):
         super().__init__()
         padding = (kernel_size - 1) // 2
         self.conv = nn.Conv2d(in_channels, out_channels, kernel_size, stride, padding, groups=group_size, bias=bias)
@@ -40,26 +40,24 @@ class MBConvBlock(nn.Module):
         expansion_channels = in_channels * expand_ratio
 
         if expand_ratio != 1:
-            self.expand_conv = ConvBlock(in_channels, expansion_channels, 1, 1, 1, activation_fn = True, bias = True)
-
+            self.expand_conv = ConvBlock(in_channels, expansion_channels, 1, 1, 1, activation_fn = True, bias=False)
+            self.bn0 = nn.BatchNorm2d(expansion_channels, momentum=self.momentum, eps=self.eps)
 
         #Squeeze and Excitation
         if include_se:
             n_squeezed_channels = max(1, int(in_channels * se_ratio))
-            self.se_reduce = ConvBlock(in_channels, n_squeezed_channels, 1, 1, 1, activation_fn = True, bias = True)
-            self.se_expand = ConvBlock(n_squeezed_channels, out_channels, 1, 1, 1, activation_fn = True, bias = True)
+            self.se_reduce = ConvBlock(in_channels, n_squeezed_channels, 1, 1, 1, activation_fn = True)
+            self.se_expand = ConvBlock(n_squeezed_channels, out_channels, 1, 1, 1, activation_fn = True)
         
         #Depthwise Convolution
             self.depthwise_conv = ConvBlock(expansion_channels, expansion_channels, expansion_channels, kernel_size, stride, activation_fn = True, bias = True)
 
-        
-        #Batch Normalization
+        #Batch Normalization / Proxy Normalization
         if proxy_norm:
             pass
         else:
-            self.bn0 = nn.BatchNorm2d(expansion_channels, momentum=self.momentum, eps=self.eps)
-            self.bn = nn.BatchNorm2d(expansion_channels, momentum=self.momentum, eps=self.eps)
+            self.bn1 = nn.BatchNorm2d(expansion_channels, momentum=self.momentum, eps=self.eps)
             self.bn2 = nn.BatchNorm2d(out_channels, momentum=self.momentum, eps=self.eps)
         
         #Projection
-        self.project_conv = ConvBlock(expansion_channels, out_channels, 1, 1, 1, activation_fn = False, bias = True)
+        self.project_conv = ConvBlock(expansion_channels, out_channels, 1, 1, 1, activation_fn = False, bias = False)
