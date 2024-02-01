@@ -19,7 +19,7 @@ class ConvBlock(nn.Module):
         return self.silu(self.conv(x))
     
 class MBConvBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_size, stride, expand_ratio, se_ratio, include_se, proxy_norm):
+    def __init__(self, in_channels, out_channels, kernel_size, stride, se_ratio, include_se, proxy_norm):
         super().__init__()
 
         self.momentum = 0.01
@@ -27,7 +27,7 @@ class MBConvBlock(nn.Module):
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.stride = stride
-        self.expand_ratio = expand_ratio
+        self.expand_ratio = 4
         self.se_ratio = se_ratio
         self.include_se = include_se
         self.proxy_norm = proxy_norm
@@ -37,20 +37,20 @@ class MBConvBlock(nn.Module):
         #Stages -> Expansion, Squeeze and Excitation, Depthwise Convolution, Projection
         
         #Expansion
-        expansion_channels = in_channels * expand_ratio
+        expansion_channels = in_channels * self.expand_ratio
 
-        if expand_ratio != 1:
-            self.expand_conv = ConvBlock(in_channels, expansion_channels, 1, 1, 1, activation_fn = True, bias=False)
+        if self.expand_ratio != 1:
+            self.expand_conv = ConvBlock(in_channels, expansion_channels, 16, 1, 1, activation_fn = True, bias=False)
             self.bn0 = nn.BatchNorm2d(expansion_channels, momentum=self.momentum, eps=self.eps)
 
         #Squeeze and Excitation
         if include_se:
             n_squeezed_channels = max(1, int(in_channels * se_ratio))
-            self.se_reduce = ConvBlock(in_channels, n_squeezed_channels, 1, 1, 1, activation_fn = True)
-            self.se_expand = ConvBlock(n_squeezed_channels, out_channels, 1, 1, 1, activation_fn = True)
+            self.se_reduce = ConvBlock(in_channels, n_squeezed_channels, 16, 1, 1, activation_fn = True)
+            self.se_expand = ConvBlock(n_squeezed_channels, out_channels, 16, 1, 1, activation_fn = True)
         
         #Depthwise Convolution
-            self.depthwise_conv = ConvBlock(expansion_channels, expansion_channels, expansion_channels, kernel_size, stride, activation_fn = True, bias = True)
+            self.depthwise_conv = ConvBlock(expansion_channels, expansion_channels, 16, kernel_size, stride, activation_fn = True, bias = True)
 
         #Batch Normalization / Proxy Normalization
         if proxy_norm:
@@ -60,4 +60,4 @@ class MBConvBlock(nn.Module):
             self.bn2 = nn.BatchNorm2d(out_channels, momentum=self.momentum, eps=self.eps)
         
         #Projection
-        self.project_conv = ConvBlock(expansion_channels, out_channels, 1, 1, 1, activation_fn = False, bias = False)
+        self.project_conv = ConvBlock(expansion_channels, out_channels, 16, 1, 1, activation_fn = False, bias = False)
