@@ -129,8 +129,9 @@ def drop_connect(x, drop_connect_rate, training):
         return x
     keep_prob = 1.0 - drop_connect_rate
     batch_size = x.shape[0]
-    random_tensor = keep_prob
-    random_tensor += torch.rand([batch_size, 1, 1, 1], dtype=x.dtype, device=x.device)
+    random_tensor = torch.rand([batch_size, 1, 1, 1], dtype=x.dtype, device=x.device)
+    random_tensor.add_(keep_prob)
     binary_mask = torch.floor(random_tensor)
-    x = (x / keep_prob) * binary_mask
+    reci_keep_prob = 1.0 / keep_prob
+    x = x * binary_mask * reci_keep_prob
     return x

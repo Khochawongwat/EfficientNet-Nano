@@ -16,7 +16,7 @@ class ConvBlock(nn.Module):
         return self.silu(self.conv(x))
     
 class MBConvBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_size, stride, se_ratio, include_se, proxy_norm, group_size = 16):
+    def __init__(self, in_channels, out_channels, kernel_size, stride, expand_ratio, include_se = True, proxy_norm = True, group_size = 16, se_ratio = 0.25):
         super().__init__()
 
         self.momentum = 0.01
@@ -24,12 +24,15 @@ class MBConvBlock(nn.Module):
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.stride = stride
-        self.expand_ratio = 4
+
+        #Expand_ratio to 4 instead of 6 because we are using grouped convolutions with group_size = 16 which could cause large memory consumption if it were to be kept at DEFAULT.
+        self.expand_ratio = 1.0 if expand_ratio == 1.0 else 4.0
+
         self.se_ratio = se_ratio
         self.include_se = include_se
         self.proxy_norm = proxy_norm
         self.group_size = group_size
-        self.relu = nn.ReLU6(inplace = True)
+        self.activation_func = Swish()
 
         #Stages -> Expansion, Squeeze and Excitation, Depthwise Convolution, Projection
         
@@ -70,22 +73,22 @@ class MBConvBlock(nn.Module):
         if self.expand_ratio != 1:
             bn0 = self.bn0(self.expand_conv(x))
             if self.proxy_norm:
-                #Usually relu is applied after batch normalization but here ProxyNormalization automatically applies the activation function to the normalized tensor, given apply_activation = True 
-                x = ProxyNormalization(bn0, activation_fn = self.relu, eps = 0.03, n_samples = min(bn0.shape[0], 256), apply_activation = True).forward()
+                #Usually an activation function is applied after batch normalization but here ProxyNormalization automatically applies the activation function to the normalized tensor, given apply_activation = True 
+                x = ProxyNormalization(bn0, activation_fn = self.activation_func, eps = 0.03, n_samples = min(bn0.shape[0], 256), apply_activation = True).forward()
             else:
-                x = self.relu(bn0)
+                x = self.activation_func(bn0)
 
         #Depthwise Convolution
         bn1 = self.bn1(self.depthwise_conv(x))
         if self.proxy_norm:
-            x = ProxyNormalization(bn1, activation_fn = self.relu, eps = 0.03, n_samples =  min(bn1.shape[0], 256), apply_activation = True).forward()
+            x = ProxyNormalization(bn1, activation_fn = self.activation_func, eps = 0.03, n_samples =  min(bn1.shape[0], 256), apply_activation = True).forward()
         else:
-            x = self.relu(bn1)
+            x = self.activation_func(bn1)
         
         #Squeeze and Excitation
         if self.include_se:
             squeezed_x = nn.AdaptiveAvgPool1d(x, 1)
-            squeezed_x = self.se_expand(self.relu(self.se_reduce(squeezed_x)))
+            squeezed_x = self.se_expand(self.activation_func(self.se_reduce(squeezed_x)))
 
             #Activate the squeezed_x for output range of 0 to 1
             x = torch.sigmoid(squeezed_x) * x
@@ -93,9 +96,9 @@ class MBConvBlock(nn.Module):
         #Projection
         bn2 = self.bn2(self.project_conv(x))
         if self.proxy_norm:
-            x = ProxyNormalization(bn2, activation_fn = self.relu, eps = 0.03, n_samples =  min(bn2.shape[0], 256), apply_activation = True).forward()
+            x = ProxyNormalization(bn2, activation_fn = self.activation_func, eps = 0.03, n_samples =  min(bn2.shape[0], 256), apply_activation = True).forward()
         else:
-            x = self.relu(bn2)
+            x = self.activation_func(bn2)
 
         # Add the identity block to the output of the projection if the input
         # and output channels are the same and the stride is 1
@@ -106,3 +109,12 @@ class MBConvBlock(nn.Module):
             x += identity_block
 
         return x
+
+
+class EfficientNetNano(nn.Module):
+    def __init__(self):
+        super().__init__()
+        pass
+    
+    def forward(self):
+        pass
