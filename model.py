@@ -39,11 +39,12 @@ class MBConvBlock(nn.Module):
         
         #Expansion
         expansion_channels = in_channels * self.expand_ratio
-
         if self.expand_ratio != 1:
             self.expand_conv = ConvBlock(in_channels, expansion_channels, self.group_size,  1, 1, activation_fn = True, bias=False)
             self.bn0 = nn.BatchNorm2d(expansion_channels, momentum=self.momentum, eps=self.eps)
-            
+        else:
+            self.expand_conv = in_channels
+
         #Squeeze and Excitation
         if include_se:
             n_squeezed_channels = max(1, int(in_channels * se_ratio))
@@ -52,13 +53,16 @@ class MBConvBlock(nn.Module):
         
         #Depthwise Convolution
         self.depthwise_conv = ConvBlock(expansion_channels, expansion_channels, self.group_size, kernel_size, stride, activation_fn = True, bias = True)
-
+    
         #Batch Normalization
         self.bn1 = nn.BatchNorm2d(expansion_channels, momentum=self.momentum, eps=self.eps)
         self.bn2 = nn.BatchNorm2d(out_channels, momentum=self.momentum, eps=self.eps)
 
         #Projection
-        self.project_conv = ConvBlock(expansion_channels, out_channels, self.group_size, 1, 1, activation_fn = False, bias = False)
+        if(self.expand_ratio != 1):
+            self.project_conv = ConvBlock(self.expand_channels, out_channels, group_size, 1, 1, activation_fn = False, bias = False)
+        else:
+            self.project_conv = ConvBlock(self.in_channels, out_channels, group_size, self.kernel_size, self.stride, activation_fn = False, bias = False)
 
     def forward(self, x, drop_connect_rate = None):
 
@@ -78,6 +82,7 @@ class MBConvBlock(nn.Module):
                 x = self.pn.forward(bn0)
             else:
                 x = self.activation_func(bn0)
+
 
         #Depthwise Convolution
         bn1 = self.bn1(self.depthwise_conv(x))
@@ -112,28 +117,33 @@ class MBConvBlock(nn.Module):
         return x
 
 class FusedMBConvBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_size, stride, expand_ratio, include_se = True, proxy_norm = True, group_size = 16, se_ratio = 0.0):
+    def __init__(self, in_channels, out_channels, kernel_size = 3, stride = 1, expand_ratio = 1, include_se = True, proxy_norm = True, group_size = 16, se_ratio = 0.0):
         super().__init__()
-        self.expand_channels = in_channels * expand_ratio
+        
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.kernel_size = kernel_size
         self.stride = stride
         self.expand_ratio = expand_ratio
         self.include_se = include_se
-        
+        self.eps = 1e-3
+
         self.group_size = group_size
         self.se_ratio = se_ratio
         self.momentum = 0.9
         self.include_pn = proxy_norm
-        self.pn = ProxyNormalization(activation_fn = Swish(), eps = 1e-3, apply_activation = True)
+        self.pn = ProxyNormalization(activation_fn = Swish(), eps = self.eps, apply_activation = True)
         self.activation_func = Swish()
+
+        expand_channels = in_channels * expand_ratio
 
         #Expansion
         if expand_ratio != 1:
-            self.expansion_conv = ConvBlock(self.in_channels, self.expand_channels, group_size, 1, 1, activation_fn = True, bias = False)
-            self.bn0 = nn.BatchNorm2d(self.expand_channels, momentum=self.momentum, eps=1e-3)
-        
+            self.expansion_conv = ConvBlock(self.in_channels, expand_channels, group_size, self.kernel_size, self.stride, activation_fn = True, bias = False)
+            self.bn0 = nn.BatchNorm2d(expand_channels, momentum=self.momentum, eps = self.eps)
+        else:
+            self.expansion_conv = in_channels
+
         #Squeeze and Excitation
         if include_se:
             squeezed_channels = max(1, int(in_channels * se_ratio))
@@ -143,12 +153,11 @@ class FusedMBConvBlock(nn.Module):
         #Projection
         self.bn2 = nn.BatchNorm2d(out_channels, momentum=self.momentum, eps=1e-3)
         if(self.expand_ratio != 1):
-            self.project_conv = ConvBlock(self.expand_channels, out_channels, group_size, self.kernel_size, self.stride, activation_fn = False, bias = False)
+            self.project_conv = ConvBlock(self.expand_channels, out_channels, group_size, 1, 1, activation_fn = False, bias = False)
         else:
-            self.project_conv = ConvBlock(self.in_channels, out_channels, group_size, 1, 1, activation_fn = False, bias = False)
-            
-    def forward(self, x, drop_connect_rate = None):
+            self.project_conv = ConvBlock(self.in_channels, out_channels, group_size, self.kernel_size, self.stride, activation_fn = False, bias = False)
 
+    def forward(self, x, drop_connect_rate = None):
         if drop_connect_rate and (drop_connect_rate > 1 or drop_connect_rate < 0):
             raise ValueError("drop_connect_rate must be between 0 and 1.")
         
@@ -187,6 +196,7 @@ class FusedMBConvBlock(nn.Module):
             x += identity_block
 
         return x
+
 class Classifier(nn.Module):
     def __init__(self, in_channels, num_classes, pool = "avg"):
         super().__init__()
