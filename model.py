@@ -112,8 +112,12 @@ class MBConvBlock(nn.Module):
         return x
 
 class EfficientNetNano(nn.Module):
-    def __init__(self, width_mult, depth_mult, num_classes, drop_connect_rate, dropout_rate, pool = "avg"):
+    def __init__(self, width_mult, depth_mult, num_classes, drop_connect_rate, dropout_rate, pool = "avg", group_size = 16):
         super().__init__()
+        
+        if pool not in ["avg", "max"]:
+            raise ValueError("pool must be either avg or max.")
+    
         self.block_params = [
             #repeat|kernel_size|stride|expand|input|output|se_ratio
                 [1, 3, 1, 1, 32,  16,  0.25],
@@ -124,6 +128,7 @@ class EfficientNetNano(nn.Module):
                 [4, 5, 2, 6, 112, 192, 0.25],
                 [1, 3, 1, 6, 192, 320, 0.25]
             ]
+        
         self.blocks = nn.ModuleList([])
         self.momentum = 0.01
         self.eps = 1e-3
@@ -131,19 +136,20 @@ class EfficientNetNano(nn.Module):
         self.dropout_rate = dropout_rate
         self.num_classes = num_classes
         self.pool = pool
+        self.group_size = group_size
 
         #Create the head block
         in_channels = round_filters(self.block_params[-1][5], width_mult)
         out_channels = 1280
-        self.head = nn.ModuleList([
-            ConvBlock(in_channels, out_channels, 1, 1, 1, activation_fn = True, proxy_norm = True),
+        self.head = nn.Sequential([
+            ConvBlock(in_channels, out_channels, self.group_size, 1, 1, activation_fn = True, proxy_norm = True),
             nn.BatchNorm2d(num_features=out_channels, momentum=self.momentum, eps= self.eps),
             Swish(), #Activation function for the head using Swish instead of ReLU
         ])
 
         #Create the stem block
-        self.stem = nn.ModuleList([
-            ConvBlock(3, out_channels, 1, 3, 2, activation_fn = True, proxy_norm = True),
+        self.stem = nn.Sequential([
+            ConvBlock(3, out_channels, self.group_size, 3, 2, activation_fn = True, proxy_norm = True),
             nn.BatchNorm2d(num_features=out_channels, momentum=self.momentum, eps= self.eps),
             Swish(), #Activation function for the stem using Swish instead of ReLU
         ])
@@ -153,6 +159,25 @@ class EfficientNetNano(nn.Module):
         for i, params in enumerate(self.block_params):
             self.stage_block(params, width_mult, depth_mult, i)
             nb += 1
+        
+        print(f"Number of blocks: {nb}")
+        
+        #Create the dropout layer
+        if dropout_rate > 0:
+            self.dropout = nn.Dropout(dropout_rate)
+        else:
+            self.dropout = nn.Identity()
+        
+        #Create the pooling layer
+        if pool == "avg":
+            self.pooling = nn.AdaptiveAvgPool2d((1,1))
+        else:
+            self.pooling = nn.AdaptiveMaxPool2d((1,1))
+
+        self.fc = nn.Linear(out_channels, num_classes)
+
+        ##Initialize the weights
+
     def stage_block(self, params, width_mult, depth_mult, i):
         if not self.blocks:
             raise ValueError("blocks is empty.")
