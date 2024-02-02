@@ -2,15 +2,20 @@ from torch import nn
 from utils import *
 
 class ConvBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, group_size, kernel_size, stride, activation_fn, bias = True):
+    def __init__(self, in_channels, out_channels, group_size, kernel_size, stride, activation_fn, bias = True, proxy_norm = True):
         super().__init__()
         padding = (kernel_size - 1) // 2
         self.conv = nn.Conv2d(in_channels, out_channels, kernel_size, stride, padding, groups=group_size, bias=bias)
+        self.bn = nn.BatchNorm2d(out_channels, momentum=0.01, eps=1e-3)
         self.silu = Swish() if activation_fn else nn.Identity()
+        self.proxy_norm = proxy_norm
 
     def forward(self, x):
-        return self.silu(self.conv(x))
-    
+        bn = self.bn(self.conv(x))
+        if self.proxy_norm:
+            return ProxyNormalization(bn, activation_fn = self.silu, eps = 0.03, n_samples = min(x.shape[0], 256), apply_activation = True).forward()
+        else:
+            return self.silu(bn)
 class MBConvBlock(nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size, stride, expand_ratio, include_se = True, proxy_norm = True, group_size = 16, se_ratio = 0.25):
         super().__init__()
@@ -28,7 +33,7 @@ class MBConvBlock(nn.Module):
         self.include_se = include_se
         self.proxy_norm = proxy_norm
         self.group_size = group_size
-        self.activation_func = Swish()
+        self.activation_func = Swish() 
 
         #Stages -> Expansion, Squeeze and Excitation, Depthwise Convolution, Projection
         
@@ -106,11 +111,70 @@ class MBConvBlock(nn.Module):
 
         return x
 
-
 class EfficientNetNano(nn.Module):
-    def __init__(self):
+    def __init__(self, width_mult, depth_mult, num_classes, drop_connect_rate, dropout_rate, pool = "avg"):
         super().__init__()
-        pass
+        self.block_params = [
+            #repeat|kernel_size|stride|expand|input|output|se_ratio
+                [1, 3, 1, 1, 32,  16,  0.25],
+                [2, 3, 2, 6, 16,  24,  0.25],
+                [2, 5, 2, 6, 24,  40,  0.25],
+                [3, 3, 2, 6, 40,  80,  0.25],
+                [3, 5, 1, 6, 80,  112, 0.25],
+                [4, 5, 2, 6, 112, 192, 0.25],
+                [1, 3, 1, 6, 192, 320, 0.25]
+            ]
+        self.blocks = nn.ModuleList([])
+        self.momentum = 0.01
+        self.eps = 1e-3
+        self.drop_connect_rate = drop_connect_rate
+        self.dropout_rate = dropout_rate
+        self.num_classes = num_classes
+        self.pool = pool
+
+        #Create the head block
+        in_channels = round_filters(self.block_params[-1][5], width_mult)
+        out_channels = 1280
+        self.head = nn.ModuleList([
+            ConvBlock(in_channels, out_channels, 1, 1, 1, activation_fn = True, proxy_norm = True),
+            nn.BatchNorm2d(num_features=out_channels, momentum=self.momentum, eps= self.eps),
+            Swish(), #Activation function for the head using Swish instead of ReLU
+        ])
+
+        #Create the stem block
+        self.stem = nn.ModuleList([
+            ConvBlock(3, out_channels, 1, 3, 2, activation_fn = True, proxy_norm = True),
+            nn.BatchNorm2d(num_features=out_channels, momentum=self.momentum, eps= self.eps),
+            Swish(), #Activation function for the stem using Swish instead of ReLU
+        ])
+
+        #Create the blocks
+        nb = 0
+        for i, params in enumerate(self.block_params):
+            self.stage_block(params, width_mult, depth_mult, i)
+            nb += 1
+    def stage_block(self, params, width_mult, depth_mult, i):
+        if not self.blocks:
+            raise ValueError("blocks is empty.")
+        stage = nn.ModuleList([])
+        repeats, kernel_size, stride, expand_ratio, in_channels, out_channels, se_ratio = params
+        self.blocks.append(self._make_block(repeats, kernel_size, stride, expand_ratio, in_channels, out_channels, se_ratio))
+
+        input_channels = input_channels if i == 0 else round_filters(input_channels, width_mult)
+        output_filters = round_filters(output_filters, width_mult)
+        num_repeat= num_repeat if i == 0 or i == len(self.block_params) - 1  else round_repeats(num_repeat, depth_mult)
+        
+        stage.append(MBConvBlock(input_channels, output_filters, kernel_size, stride, expand_ratio, se_ratio, has_se=False))
+
+        if num_repeat > 1:
+            input_filters = output_filters
+            stride = 1
+
+        for _ in range(num_repeat - 1):
+            stage.append(MBConvBlock(input_filters, output_filters, kernel_size, stride, expand_ratio, se_ratio, has_se=False))
+            
+        self.blocks.append(stage)
+        return self
     
     def forward(self):
         pass

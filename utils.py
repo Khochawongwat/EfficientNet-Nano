@@ -1,3 +1,4 @@
+import math
 from sympy import erfinv
 import torch
 from torch import nn
@@ -135,3 +136,20 @@ def drop_connect(x, drop_connect_rate, training):
     reci_keep_prob = 1.0 / keep_prob
     x = x * binary_mask * reci_keep_prob
     return x
+
+def round_filters(filters, multiplier = None, divisor=8, min_width=None):
+    if not multiplier:
+        return filters
+    if multiplier != 1:
+        filters *= multiplier
+    min_width = min_width or divisor
+    new_filters = max(min_width, int(filters + divisor / 2) // divisor * divisor)
+    # Make sure that round down does not go down by more than 10%.
+    if new_filters < 0.9 * filters:
+        new_filters += divisor
+    return int(new_filters)
+
+def round_repeats(repeats, multiplier = None):
+    if not multiplier:
+        return repeats
+    return int(math.ceil(multiplier * repeats))
