@@ -4,6 +4,7 @@ import torch
 from torch import nn
 import numpy as np
 from scipy.special import erfinv
+
 class Swish(nn.Module):
     def __init__(self, beta = 1.0):
         super().__init__()
@@ -60,7 +61,6 @@ def uniformly_sampled_gaussian(num_rand: int):
     rand = 2 * (np.arange(num_rand) + 0.5) / float(num_rand) - 1
     return np.sqrt(2) * erfinv(rand)
 
-
 def create_channelwise_variable(y: torch.Tensor, init: float):
     """
     Function to create a channel-wise variable.
@@ -77,25 +77,30 @@ class ProxyNormalization(nn.Module):
     """
     Proxy Normalization class.
     """
-    def __init__(self, y: torch.Tensor, activation_fn: callable, eps: float = 0.03, n_samples: int = 256, apply_activation: bool = False):
+    def __init__(self, activation_fn: callable, eps: float = 0.03, apply_activation: bool = False, n_samples: int = 256):
         super().__init__()
+        self.activation_fn = activation_fn
+        self.eps = eps
+        self.n_samples = n_samples
+        self.apply_activation = apply_activation
 
+    def forward(self, y: torch.Tensor) -> torch.Tensor:
         if(y.ndim != 4):
             raise ValueError("y must be a 4-dimensional tensor.")
         
         if y.shape == (1, 1, 1, 1):
             raise ValueError("y is a scalar. Proxy Normalization will not be applied.")
             
-        if(not tensor_is_normalized(y, eps)):
+        if(not tensor_is_normalized(y, self.eps)):
             raise ValueError("y must be normalized.")
         
-        self.y = y
-        self.activation_fn = activation_fn
-        self.eps = eps
-        self.n_samples = n_samples
-        self.apply_activation = apply_activation
+        if(self.n_samples < 1):
+            raise ValueError("n_samples must be greater than 0.")
+        
+        if(self.n_samples > y.shape[0]):
+            print("n_samples is greater than the batch size. Setting n_samples to the batch size.")
+            self.n_samples = min(y.shape[0], self.n_samples)
 
-    def forward(self) -> torch.Tensor:
         beta = create_channelwise_variable(self.y, 0.0)
         gamma = create_channelwise_variable(self.y, 1.0)
         

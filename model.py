@@ -1,6 +1,5 @@
 from torch import nn
 from utils import *
-
 class ConvBlock(nn.Module):
     def __init__(self, in_channels, out_channels, group_size, kernel_size, stride, activation_fn, bias = True, proxy_norm = True):
         super().__init__()
@@ -31,10 +30,10 @@ class MBConvBlock(nn.Module):
 
         self.se_ratio = se_ratio
         self.include_se = include_se
-        self.proxy_norm = proxy_norm
+        self.include_pn = proxy_norm
+        self.pn = ProxyNormalization(activation_fn = Swish(), eps = self.eps, apply_activation=True)
         self.group_size = group_size
-        self.activation_func = Swish() 
-
+        self.activation_func = Swish()
         #Stages -> Expansion, Squeeze and Excitation, Depthwise Convolution, Projection
         
         #Expansion
@@ -73,16 +72,16 @@ class MBConvBlock(nn.Module):
         #Expansion
         if self.expand_ratio != 1:
             bn0 = self.bn0(self.expand_conv(x))
-            if self.proxy_norm:
+            if self.include_pn:
                 #Usually an activation function is applied after batch normalization but here ProxyNormalization automatically applies the activation function to the normalized tensor, given apply_activation = True 
-                x = ProxyNormalization(bn0, activation_fn = self.activation_func, eps = 0.03, n_samples = min(bn0.shape[0], 256), apply_activation = True).forward()
+                x = self.pn.forward(bn0)
             else:
                 x = self.activation_func(bn0)
 
         #Depthwise Convolution
         bn1 = self.bn1(self.depthwise_conv(x))
-        if self.proxy_norm:
-            x = ProxyNormalization(bn1, activation_fn = self.activation_func, eps = 0.03, n_samples =  min(bn1.shape[0], 256), apply_activation = True).forward()
+        if self.include_pn:
+            x = self.pn.forward(bn1)
         else:
             x = self.activation_func(bn1)
         
@@ -96,8 +95,8 @@ class MBConvBlock(nn.Module):
 
         #Projection
         bn2 = self.bn2(self.project_conv(x))
-        if self.proxy_norm:
-            x = ProxyNormalization(bn2, activation_fn = self.activation_func, eps = 0.03, n_samples =  min(bn2.shape[0], 256), apply_activation = True).forward()
+        if self.include_pn:
+            x = self.pn.forward(bn2)
         else:
             x = self.activation_func(bn2)
 
@@ -144,6 +143,7 @@ class EfficientNetNano(nn.Module):
         self.head = nn.Sequential([
             ConvBlock(in_channels, out_channels, self.group_size, 1, 1, activation_fn = True, proxy_norm = True),
             nn.BatchNorm2d(num_features=out_channels, momentum=self.momentum, eps= self.eps),
+            ProxyNormalization(activation_fn = Swish(), eps = 0.03, n_samples =  min(out_channels, 256), apply_activation = False),
             Swish(), #Activation function for the head using Swish instead of ReLU
         ])
 
@@ -151,6 +151,7 @@ class EfficientNetNano(nn.Module):
         self.stem = nn.Sequential([
             ConvBlock(3, out_channels, self.group_size, 3, 2, activation_fn = True, proxy_norm = True),
             nn.BatchNorm2d(num_features=out_channels, momentum=self.momentum, eps= self.eps),
+            ProxyNormalization(activation_fn = Swish(), eps = 0.03, n_samples =  min(out_channels, 256), apply_activation = False),
             Swish(), #Activation function for the stem using Swish instead of ReLU
         ])
 
@@ -201,5 +202,7 @@ class EfficientNetNano(nn.Module):
         self.blocks.append(stage)
         return self
     
+    def init_weights(self):
+        pass
     def forward(self):
         pass
