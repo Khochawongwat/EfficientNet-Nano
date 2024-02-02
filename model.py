@@ -1,10 +1,6 @@
 from torch import nn
 from utils import *
 
-params = {
-    "efficientnet-nano": [1, 1, 224, 0.2],
-}
-
 class ConvBlock(nn.Module):
     def __init__(self, in_channels, out_channels, group_size, kernel_size, stride, activation_fn, bias = True):
         super().__init__()
